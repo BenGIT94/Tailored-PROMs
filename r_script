@@ -1,0 +1,1419 @@
+setwd("~/Library/CloudStorage/OneDrive-Hasso-Plattner-InstitutgGmbH/Datasets/TU PROMQ")
+
+require(lattice)
+require(pan)
+require('devtools')
+library('dplyr')
+library("tidyr")
+library('stringr')
+library('lubridate')
+library('Rcpp')
+library('fastDummies')
+library('glue')
+library('comorbidity')
+library('ggplot2')
+library('MatchIt')
+library("lme4")
+library("sandwich")
+library("lmtest")
+library('tidyverse')
+library('clusterSEs') #https://cran.r-project.org/web/packages/clusterSEs/clusterSEs.pdf
+library(gplots)
+library(mice)
+library(data.table)
+library(reshape)
+
+# Load the combined data -------------------------------------------------------
+data1 <- fread("combined_results_HOOS_baseline_clustering.csv")
+data2 <- fread("combined_results_Multivariate_clustering.csv")
+data3 <- fread("combined_results_EQ5D5L_clustering.csv")
+
+data <- full_join(data1, data2)
+data <- full_join(data, data3)
+
+rm(data1, data2, data3)
+data$V1=NULL
+
+# Convert necessary columns to numeric
+data$Adjusted_MIC_Estimate <- as.numeric(gsub(",", ".", data$Adjusted_MIC_Estimate))
+data$Adjusted_MIC_Lower <- as.numeric(gsub(",", ".", data$Adjusted_MIC_Lower))
+data$Adjusted_MIC_Upper <- as.numeric(gsub(",", ".", data$Adjusted_MIC_Upper))
+
+# Convert necessary columns to numeric
+data <- data %>%
+  mutate(
+    Adjusted_MIC_Estimate = as.numeric(gsub(",", ".", Adjusted_MIC_Estimate)),
+    Adjusted_MIC_Lower = as.numeric(gsub(",", ".", Adjusted_MIC_Lower)),
+    Adjusted_MIC_Upper = as.numeric(gsub(",", ".", Adjusted_MIC_Upper))
+  )
+
+
+# Function to create forest plots for each month
+create_forest_plot <- function(data) {
+  plot_data <- data %>% 
+    filter(analysis == "Multivariate_clustering")  # Ensure correct filtering
+  
+  dodge <- position_dodge(width = 0.25)  # Define dodge for points & error bars
+  
+  ggplot(plot_data, aes(x = factor(Month), y = Adjusted_MIC_Estimate, color = Cluster)) +
+    geom_point(aes(group = Cluster), position = dodge, size = 3) +
+    geom_errorbar(aes(ymin = Adjusted_MIC_Lower, ymax = Adjusted_MIC_Upper, group = Cluster), 
+                  width = 0.2, position = dodge) +
+    
+    scale_y_continuous(breaks = seq(floor(min(plot_data$Adjusted_MIC_Estimate, na.rm = TRUE) / 5) * 5, 
+                                    ceiling(max(plot_data$Adjusted_MIC_Estimate, na.rm = TRUE) / 5) * 5, 
+                                    by = 5)) +  
+    labs(title = "Adjusted MIC Estimates (multi-variable clustering)",
+         x = "Month",
+         y = "HOOS-PS change") +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    scale_color_manual(values = c("black", "blue", "purple", "red")) # Adjust colors as needed
+}
+
+# Create the forest plot for all data
+forest_plot <- create_forest_plot(data)
+forest_plot
+
+
+
+
+
+ggsave("forest_plot_overall.png", forest_plot)
+
+
+# davids plot
+
+data_reduced = data %>% filter(analysis != "HOOS_clustering")
+
+# Define shapes for clusters
+shapes <- c(16, 17, 15, 18)  # Added a fourth shape
+
+# Create the plot
+forest_plot_all_clusters <- ggplot(data_reduced, aes(x = factor(Month), y = Adjusted_MIC_Estimate, shape = as.factor(Cluster), color = analysis, group = interaction(Cluster, analysis))) +
+  geom_point(size = 3, position = position_dodge(width = 0.5)) +
+  geom_errorbar(aes(ymin = Adjusted_MIC_Lower, ymax = Adjusted_MIC_Upper), width = 0.2, position = position_dodge(width = 0.5)) +
+  #geom_line(position = position_dodge(width = 0.25)) +
+  scale_shape_manual(values = shapes) +
+  labs(title = "Forest Plot of Adjusted MIC Estimates",
+       x = "Month",
+       y = "Adjusted MIC Estimate") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_color_manual(values = c("black", "blue"))
+
+forest_plot_all_clusters
+
+
+ 
+ggsave("forest_plot_all_clusters.png", forest_plot_all_clusters)
+
+# Table for adjusted MIC values ------------------------------------------------
+
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+
+# Assuming your dataset is named 'data_reduced'
+# First, filter for the EQ.5D.5L.clustering analysis
+data_filtered <- data_reduced %>%
+  filter(analysis == "EQ_5D_5L_clustering")
+
+# Then, select and reshape the data to match your desired table format
+table_data <- data_filtered %>%
+  select(Month, Adjusted_MIC_Estimate, Adjusted_MIC_Lower, Adjusted_MIC_Upper, Cluster) %>%
+  mutate(Variable = case_when(
+    Month == 1 ~ "Adjusted MIC Month 1",
+    Month == 3 ~ "Adjusted MIC Month 3",
+    Month == 6 ~ "Adjusted MIC Month 6"
+  )) %>%
+  filter(!is.na(Variable)) %>%
+  group_by(Variable, Cluster) %>%
+  summarise(
+    Estimate = mean(Adjusted_MIC_Estimate),
+    Lower = mean(Adjusted_MIC_Lower),
+    Upper = mean(Adjusted_MIC_Upper)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Value = paste0(round(Estimate, 2), " (", round(Lower, 2), " - ", round(Upper, 2), ")")
+  ) %>%
+  select(Variable, Cluster, Value) %>%
+  spread(key = Cluster, value = Value)
+
+# Rename columns to match your table
+names(table_data) <- c("Variable", "Cluster 1", "Cluster 2", "Cluster 3")
+
+# Print the table
+print(table_data)
+
+
+
+# Plot comparison methods clustering who gets alert ----------------------------
+
+
+data_HOOS_clustering <- fread("data_clusters_combined_2_HOOS_baseline_clustering.csv")
+data_EQ5D5L_clustering <- fread("data_clusters_combined_2_EQ5D5L_baseline_clustering.csv")
+data_multi_clustering <- fread("data_clusters_combined_2_multivariate.csv")
+
+
+
+data_HOOS_clustering <- as.data.frame(lapply(data_HOOS_clustering, function(x) {
+  if(is.character(x)) {
+    return(gsub(",", ".", x))
+  } else {
+    return(x)
+  }
+}))
+
+data_EQ5D5L_clustering <- as.data.frame(lapply(data_EQ5D5L_clustering, function(x) {
+  if(is.character(x)) {
+    return(gsub(",", ".", x))
+  } else {
+    return(x)
+  }
+}))
+
+data_multi_clustering <- as.data.frame(lapply(data_multi_clustering, function(x) {
+  if(is.character(x)) {
+    return(gsub(",", ".", x))
+  } else {
+    return(x)
+  }
+}))
+
+
+write.csv2(data_multi_clustering %>% select(HOOS_KOOS_Aufnahme, EQ_total_Aufnahme, age_at_surgery, gender_Aufnahme, cluster), "data_clusters.csv")
+
+
+
+# Summary statistics multi-variable clustering ---------------------------------
+
+
+data_original <- fread("wide_alle_gruppen_nicht_imputiert.csv")  
+
+data_original <- data_original %>%
+  select(patientID, starts_with("como_"), weight_Aufnahme, height_Aufnahme, smoker_Aufnahme, duration_weeklyactiv_Aufnahme, caredegree_Aufnahme)
+
+data_multi_clustering <- left_join(data_multi_clustering, data_original) # substitute through data_EQ5D5L_clustering to get single-variable summary statistics
+
+
+
+data_multi_clustering$age_at_surgery <- as.numeric(data_multi_clustering$age_at_surgery)
+
+library(compareGroups)
+
+
+
+# Filter column names based on the criteria
+selected_columns <- names(data_multi_clustering)[grepl("^como_", names(data_multi_clustering)) & grepl("Aufnahme", names(data_multi_clustering))]
+
+data_multi_clustering$BMI <- data_multi_clustering$weight_Aufnahme / (data_multi_clustering$height_Aufnahme / 100)^2
+
+# Select relevant columns from the dataset
+summary_statistics <- data_multi_clustering %>%
+  select(
+    patientID,
+    cluster,
+    age_at_surgery, 
+    gender_Aufnahme, 
+    weight_Aufnahme, 
+    height_Aufnahme, 
+    BMI,
+    caredegree_Aufnahme,
+    duration_weeklyactiv_Aufnahme, 
+    smoker_Aufnahme, 
+    
+    # Group comorbidities together
+    all_of(selected_columns),  # Include filtered como_Aufnahme columns
+    
+    # Quality of life and clinical outcomes
+    EQ_total_Aufnahme,
+    EQ_total_Monat_12,
+    HOOS_KOOS_Aufnahme,
+    HOOS_KOOS_Monat_1,
+    HOOS_KOOS_Monat_3,
+    HOOS_KOOS_Monat_6,
+    HOOS_KOOS_Monat_12,
+    
+    # Alerts and MIC reached at different time points
+    any_alert_month1,
+    any_alert_month3, 
+    any_alert_month6, 
+    mic_reached_month1, 
+    mic_reached_month3, 
+    mic_reached_month6,
+    mic_reached_month1_unclustered,
+    mic_reached_month3_unclustered,
+    mic_reached_month6_unclustered
+  )
+
+mic_eq5d5l <- data_EQ5D5L_clustering %>% select(patientID, mic_reached_month1, mic_reached_month3, mic_reached_month6)
+
+mic_eq5d5l$mic_reached_singlevar_month1 = mic_eq5d5l$mic_reached_month1
+mic_eq5d5l$mic_reached_singlevar_month3 = mic_eq5d5l$mic_reached_month3
+mic_eq5d5l$mic_reached_singlevar_month6 = mic_eq5d5l$mic_reached_month6
+
+mic_eq5d5l <- mic_eq5d5l %>% select(patientID, mic_reached_singlevar_month1, mic_reached_singlevar_month3, mic_reached_singlevar_month6)
+
+summary_statistics <- left_join(summary_statistics, mic_eq5d5l)
+
+summary_statistics %>% select(mic_reached_month1, mic_reached_singlevar_month1, mic_reached_month3, mic_reached_singlevar_month3, mic_reached_month6, mic_reached_singlevar_month6) %>% View()
+rm(mic_eq5d5l)
+
+# umpolen
+
+# new -> who did not reach
+
+summary_statistics$mic_not_reached_singlevar_month1 <- 1-summary_statistics$mic_reached_singlevar_month1
+summary_statistics$mic_not_reached_singlevar_month3 <- 1-summary_statistics$mic_reached_singlevar_month3
+summary_statistics$mic_not_reached_singlevar_month6 <- 1-summary_statistics$mic_reached_singlevar_month6
+
+summary_statistics$mic_not_reached_month1 <- 1-summary_statistics$mic_reached_month1
+summary_statistics$mic_not_reached_month3 <- 1-summary_statistics$mic_reached_month3
+summary_statistics$mic_not_reached_month6 <- 1-summary_statistics$mic_reached_month6
+
+summary_statistics$mic_not_reached_month1_unclustered <- 1-summary_statistics$mic_reached_month1_unclustered
+summary_statistics$mic_not_reached_month3_unclustered <- 1-summary_statistics$mic_reached_month3_unclustered
+summary_statistics$mic_not_reached_month6_unclustered <- 1-summary_statistics$mic_reached_month6_unclustered
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Define columns for each category
+alert_columns <- c("any_alert_month1", "any_alert_month3", "any_alert_month6")
+mic_columns <- c("mic_not_reached_month1", "mic_not_reached_month3", "mic_not_reached_month6")
+unclustered_columns <- c("mic_not_reached_month1_unclustered", "mic_not_reached_month3_unclustered", "mic_not_reached_month6_unclustered")
+singlevar_columns <- c("mic_not_reached_singlevar_month1", "mic_not_reached_singlevar_month3", "mic_not_reached_singlevar_month6")  # UPDATED VARIABLE NAMES
+
+# Prepare "PROMoting Quality thresholds" dataset
+alert_data <- summary_statistics %>%
+  select(all_of(alert_columns)) %>%
+  pivot_longer(cols = everything(), names_to = "Month", values_to = "Alert_Status") %>%
+  mutate(Month = case_when(
+    Month == "any_alert_month1" ~ "Month 1",
+    Month == "any_alert_month3" ~ "Month 3",
+    Month == "any_alert_month6" ~ "Month 6"
+  ),
+  Category = "PROMoting Quality thresholds",
+  Alert_Status = as.character(Alert_Status))
+
+# Prepare "New thresholds (single-variable clustered)" dataset (UPDATED VARIABLE NAMES)
+singlevar_data <- summary_statistics %>%
+  select(all_of(singlevar_columns)) %>%
+  pivot_longer(cols = everything(), names_to = "Month", values_to = "Alert_Status") %>%
+  mutate(Month = case_when(
+    Month == "mic_not_reached_singlevar_month1" ~ "Month 1",
+    Month == "mic_not_reached_singlevar_month3" ~ "Month 3",
+    Month == "mic_not_reached_singlevar_month6" ~ "Month 6"
+  ),
+  Category = "New thresholds (single-variable clustered)",
+  Alert_Status = as.character(Alert_Status))
+
+# Prepare "New thresholds (multi-variable clustered)" dataset
+mic_data <- summary_statistics %>%
+  select(all_of(mic_columns)) %>%
+  pivot_longer(cols = everything(), names_to = "Month", values_to = "Alert_Status") %>%
+  mutate(Month = case_when(
+    Month == "mic_not_reached_month1" ~ "Month 1",
+    Month == "mic_not_reached_month3" ~ "Month 3",
+    Month == "mic_not_reached_month6" ~ "Month 6"
+  ),
+  Category = "New thresholds (multi-variable clustered)",
+  Alert_Status = as.character(Alert_Status))
+
+# Prepare "New thresholds (unclustered)" dataset
+unclustered_data <- summary_statistics %>%
+  select(all_of(unclustered_columns)) %>%
+  pivot_longer(cols = everything(), names_to = "Month", values_to = "Alert_Status") %>%
+  mutate(Month = case_when(
+    Month == "mic_not_reached_month1_unclustered" ~ "Month 1",
+    Month == "mic_not_reached_month3_unclustered" ~ "Month 3",
+    Month == "mic_not_reached_month6_unclustered" ~ "Month 6"
+  ),
+  Category = "New thresholds (unclustered)",
+  Alert_Status = as.character(Alert_Status))
+
+# Combine all datasets
+plot_data <- bind_rows(alert_data, singlevar_data, mic_data, unclustered_data)
+
+# Replace NA with "NA" explicitly
+plot_data$Alert_Status[is.na(plot_data$Alert_Status)] <- "NA"
+
+# Count occurrences per month and category
+plot_data <- plot_data %>%
+  group_by(Month, Category, Alert_Status) %>%
+  summarise(Count = n(), .groups = "drop")
+
+# Calculate percentage for each Alert_Status within each Month and Category
+plot_data <- plot_data %>%
+  group_by(Month, Category) %>%
+  mutate(Percentage = Count / sum(Count) * 100) %>%
+  ungroup()
+
+# Convert Alert_Status to a factor for proper ordering
+plot_data$Alert_Status <- factor(plot_data$Alert_Status, levels = c("1", "0", "NA"))
+
+# Convert Category to a factor and set the levels to control the order of appearance
+plot_data$Category <- factor(plot_data$Category, levels = c(
+  "PROMoting Quality thresholds", 
+  "New thresholds (unclustered)", 
+  "New thresholds (single-variable clustered)",  # Now before multi-variable
+  "New thresholds (multi-variable clustered)"
+))
+
+# Plot the data with percentages
+ggplot(plot_data, aes(x = Month, y = Count, fill = Alert_Status)) +
+  geom_bar(stat = "identity", position = "stack") +  # Keep absolute numbers
+  facet_wrap(~Category) +  # Separate panels for each category
+  scale_fill_manual(
+    values = c("black", "darkgray", "lightgray"),  # Custom colors
+    labels = c("Alert Triggered", "No Alert", "Missing Data")  # Updated labels
+  ) +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5), size = 4, color = "white") +  # Add percentage labels
+  labs(x = "Month", y = "Number of Patients", fill = "Alert Type") +  # Updated legend title
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+
+
+
+
+library(compareGroups)
+
+# Define the columns where NA should be replaced with 1 instead of 0
+cols_to_change <- c("mic_reached_month1", 
+                    "mic_reached_month3", 
+                    "mic_reached_month6",
+                    "mic_reached_month1_unclustered",
+                    "mic_reached_month3_unclustered",
+                    "mic_reached_month6_unclustered")
+
+# Set NA values to 1 for the specified columns
+summary_statistics[cols_to_change] <- lapply(summary_statistics[cols_to_change], function(x) { 
+  x[is.na(x)] <- 1
+  return(x)
+})
+
+# Set all remaining NA values to 0
+summary_statistics[is.na(summary_statistics)] <- 0
+
+
+summary_statistics$caredegree_Aufnahme <- ifelse(grepl("^Pflegegrad 1", summary_statistics$caredegree_Aufnahme), "Pflegegrad_1",
+                                                ifelse(grepl("^Pflegegrad 2", summary_statistics$caredegree_Aufnahme), "Pflegegrad_2",
+                                                       ifelse(grepl("^Pflegegrad 3", summary_statistics$caredegree_Aufnahme), "Pflegegrad_3",
+                                                              ifelse(grepl("^Pflegegrad 4", summary_statistics$caredegree_Aufnahme), "Pflegegrad_4",
+                                                                     ifelse(grepl("^Pflegegrad 5", summary_statistics$caredegree_Aufnahme), "Pflegegrad_5", NA)))))
+
+
+summary_statistics$caredegree_Aufnahme<- ifelse(is.na(summary_statistics$caredegree_Aufnahme),"Leer", summary_statistics$caredegree_Aufnahme)
+summary_statistics$caredegree_Aufnahme <- ifelse(summary_statistics$caredegree_Aufnahme == "Keinen Pflegegrad", "Keinen_Pflegegrad", summary_statistics$caredegree_Aufnahme)
+
+# Preview the updated dataset
+
+summary_statistics$duration_weeklyactiv_Aufnahme<- ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Etwa 30 Minuten", "30Min",
+                                            ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Etwa 2 Stunden", "2Stunden",
+                                                   ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Etwa 1 Stunde", "1Stunde",
+                                                          ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "0", "0",
+                                                                 ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Mehr als 2 Stunden", "Mehr2Stunden",
+                                                                        ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Keine", "Keine", NA))))))
+
+summary_statistics$duration_weeklyactiv_Aufnahme <- as.factor(summary_statistics$duration_weeklyactiv_Aufnahme)
+summary_statistics$caredegree_Aufnahme <- as.factor(summary_statistics$caredegree_Aufnahme)
+
+
+summary_statistics$BMI <- as.numeric(summary_statistics$BMI)
+summary_statistics$EQ_total_Monat_12 <- as.numeric(summary_statistics$EQ_total_Monat_12)
+summary_statistics$HOOS_KOOS_Aufnahme <- as.numeric(summary_statistics$HOOS_KOOS_Aufnahme)
+
+summary_statistics$weight_Aufnahme <- as.numeric(summary_statistics$weight_Aufnahme)
+summary_statistics$height_Aufnahme <- as.numeric(summary_statistics$height_Aufnahme)
+summary_statistics$smoker_Aufnahme <- as.numeric(summary_statistics$smoker_Aufnahme)
+summary_statistics$EQ_total_Aufnahme <- as.numeric(summary_statistics$EQ_total_Aufnahme)
+summary_statistics$any_alert_month1 <- as.numeric(summary_statistics$any_alert_month1)
+summary_statistics$any_alert_month3 <- as.numeric(summary_statistics$any_alert_month3)
+summary_statistics$any_alert_month6 <- as.numeric(summary_statistics$any_alert_month6)
+summary_statistics$mic_reached_month1 <- as.numeric(summary_statistics$mic_reached_month1)
+summary_statistics$mic_reached_month3 <- as.numeric(summary_statistics$mic_reached_month3)
+summary_statistics$mic_reached_month6 <- as.numeric(summary_statistics$mic_reached_month6)
+summary_statistics$EQ_total_Monat_12 <- as.numeric(summary_statistics$EQ_total_Monat_12)
+summary_statistics$EQ_total_Aufnahme <- as.numeric(summary_statistics$EQ_total_Aufnahme)
+summary_statistics$gender_Aufnahme <- as.numeric(summary_statistics$gender_Aufnahme)
+summary_statistics$HOOS_KOOS_Monat_12 <- as.numeric(summary_statistics$HOOS_KOOS_Monat_12)
+
+summary_statistics$all = 1
+summary_statistics$caredegree_Aufnahme <- as.factor(summary_statistics$caredegree_Aufnahme)
+
+# new -> who did not reach
+summary_statistics$mic_not_reached_month1 <- 1-summary_statistics$mic_reached_month1
+summary_statistics$mic_not_reached_month3 <- 1-summary_statistics$mic_reached_month3
+summary_statistics$mic_not_reached_month6 <- 1-summary_statistics$mic_reached_month6
+
+summary_statistics$mic_not_reached_month1_unclustered <- 1-summary_statistics$mic_reached_month1_unclustered
+summary_statistics$mic_not_reached_month3_unclustered <- 1-summary_statistics$mic_reached_month3_unclustered
+summary_statistics$mic_not_reached_month6_unclustered <- 1-summary_statistics$mic_reached_month6_unclustered
+
+
+compareGroups(cluster ~ ., data = summary_statistics)
+compareGroups(all ~ ., data = summary_statistics)
+
+# dressing up the output
+
+resu1 <- compareGroups(cluster ~ ., data = summary_statistics)
+resu2 <- compareGroups(all ~ ., data = summary_statistics)
+
+
+restab <- createTable(resu1)
+restab
+restab_2 <- createTable(resu2)
+restab_2
+
+
+export2word(restab, file='summary_statistics_cluster.docx')
+export2word(restab_2, file='summary_statistics_all.docx')
+
+
+# summary statistics single-variable -------------------------------------------
+
+library(data.table)
+library(dplyr)
+library(compareGroups)
+# library(ggplot2)  -> Removed because no plots are needed
+# library(tidyr)    -> Removed because no plots are needed
+
+# Read and prepare additional data
+data_original <- fread("wide_alle_gruppen_nicht_imputiert.csv")  
+
+data_original <- data_original %>%
+  select(patientID, starts_with("como_"), weight_Aufnahme, height_Aufnahme, smoker_Aufnahme, duration_weeklyactiv_Aufnahme, caredegree_Aufnahme)
+
+# Use data_EQ5D5L_clustering instead of data_multi_clustering
+data_EQ5D5L_clustering <- left_join(data_EQ5D5L_clustering, data_original)
+
+data_EQ5D5L_clustering$age_at_surgery <- as.numeric(data_EQ5D5L_clustering$age_at_surgery)
+
+# Filter column names based on the criteria
+selected_columns <- names(data_EQ5D5L_clustering)[grepl("^como_", names(data_EQ5D5L_clustering)) & grepl("Aufnahme", names(data_EQ5D5L_clustering))]
+
+data_EQ5D5L_clustering$BMI <- data_EQ5D5L_clustering$weight_Aufnahme / (data_EQ5D5L_clustering$height_Aufnahme / 100)^2
+
+# Select relevant columns from the dataset (removed unclustered variables)
+summary_statistics <- data_EQ5D5L_clustering %>%
+  select(
+    patientID,
+    cluster,
+    age_at_surgery, 
+    gender_Aufnahme, 
+    weight_Aufnahme, 
+    height_Aufnahme, 
+    BMI,
+    caredegree_Aufnahme,
+    duration_weeklyactiv_Aufnahme, 
+    smoker_Aufnahme, 
+    
+    # Group comorbidities together
+    all_of(selected_columns),  # Include filtered como_Aufnahme columns
+    
+    # Quality of life and clinical outcomes
+    EQ_total_Aufnahme,
+    EQ_total_Monat_12,
+    HOOS_KOOS_Aufnahme,
+    HOOS_KOOS_Monat_1,
+    HOOS_KOOS_Monat_3,
+    HOOS_KOOS_Monat_6,
+    HOOS_KOOS_Monat_12,
+    
+    # Alerts and MIC reached at different time points
+    any_alert_month1,
+    any_alert_month3, 
+    any_alert_month6, 
+    mic_reached_month1, 
+    mic_reached_month3, 
+    mic_reached_month6
+  )
+
+# Create a dataset with MIC values for the single-variable approach
+mic_eq5d5l <- data_EQ5D5L_clustering %>% 
+  select(patientID, mic_reached_month1, mic_reached_month3, mic_reached_month6)
+
+mic_eq5d5l$mic_reached_singlevar_month1 <- mic_eq5d5l$mic_reached_month1
+mic_eq5d5l$mic_reached_singlevar_month3 <- mic_eq5d5l$mic_reached_month3
+mic_eq5d5l$mic_reached_singlevar_month6 <- mic_eq5d5l$mic_reached_month6
+
+mic_eq5d5l <- mic_eq5d5l %>% 
+  select(patientID, mic_reached_singlevar_month1, mic_reached_singlevar_month3, mic_reached_singlevar_month6)
+
+summary_statistics <- left_join(summary_statistics, mic_eq5d5l)
+
+# Optional: Preview the MIC columns
+summary_statistics %>% 
+  select(mic_reached_month1, mic_reached_singlevar_month1, 
+         mic_reached_month3, mic_reached_singlevar_month3, 
+         mic_reached_month6, mic_reached_singlevar_month6) %>% 
+  View()
+rm(mic_eq5d5l)
+
+# Create new columns: who did not reach MIC
+summary_statistics$mic_not_reached_singlevar_month1 <- 1 - summary_statistics$mic_reached_singlevar_month1
+summary_statistics$mic_not_reached_singlevar_month3 <- 1 - summary_statistics$mic_reached_singlevar_month3
+summary_statistics$mic_not_reached_singlevar_month6 <- 1 - summary_statistics$mic_reached_singlevar_month6
+
+summary_statistics$mic_not_reached_month1 <- 1 - summary_statistics$mic_reached_month1
+summary_statistics$mic_not_reached_month3 <- 1 - summary_statistics$mic_reached_month3
+summary_statistics$mic_not_reached_month6 <- 1 - summary_statistics$mic_reached_month6
+
+# (Plotting code removed)
+
+# Replace NA with 1 for specified columns
+cols_to_change <- c("mic_reached_month1", 
+                    "mic_reached_month3", 
+                    "mic_reached_month6")
+
+summary_statistics[cols_to_change] <- lapply(summary_statistics[cols_to_change], function(x) { 
+  x[is.na(x)] <- 1
+  return(x)
+})
+
+# Set all remaining NA values to 0
+summary_statistics[is.na(summary_statistics)] <- 0
+
+# Transform caredegree_Aufnahme
+summary_statistics$caredegree_Aufnahme <- ifelse(grepl("^Pflegegrad 1", summary_statistics$caredegree_Aufnahme), "Pflegegrad_1",
+                                                 ifelse(grepl("^Pflegegrad 2", summary_statistics$caredegree_Aufnahme), "Pflegegrad_2",
+                                                        ifelse(grepl("^Pflegegrad 3", summary_statistics$caredegree_Aufnahme), "Pflegegrad_3",
+                                                               ifelse(grepl("^Pflegegrad 4", summary_statistics$caredegree_Aufnahme), "Pflegegrad_4",
+                                                                      ifelse(grepl("^Pflegegrad 5", summary_statistics$caredegree_Aufnahme), "Pflegegrad_5", NA)))))
+
+summary_statistics$caredegree_Aufnahme <- ifelse(is.na(summary_statistics$caredegree_Aufnahme), "Leer", summary_statistics$caredegree_Aufnahme)
+summary_statistics$caredegree_Aufnahme <- ifelse(summary_statistics$caredegree_Aufnahme == "Keinen Pflegegrad", "Keinen_Pflegegrad", summary_statistics$caredegree_Aufnahme)
+
+# Recode duration_weeklyactiv_Aufnahme
+summary_statistics$duration_weeklyactiv_Aufnahme <- ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Etwa 30 Minuten", "30Min",
+                                                           ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Etwa 2 Stunden", "2Stunden",
+                                                                  ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Etwa 1 Stunde", "1Stunde",
+                                                                         ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "0", "0",
+                                                                                ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Mehr als 2 Stunden", "Mehr2Stunden",
+                                                                                       ifelse(summary_statistics$duration_weeklyactiv_Aufnahme == "Keine", "Keine", NA))))))
+summary_statistics$duration_weeklyactiv_Aufnahme <- as.factor(summary_statistics$duration_weeklyactiv_Aufnahme)
+summary_statistics$caredegree_Aufnahme <- as.factor(summary_statistics$caredegree_Aufnahme)
+
+# Convert variables to numeric
+summary_statistics$BMI <- as.numeric(summary_statistics$BMI)
+summary_statistics$EQ_total_Monat_12 <- as.numeric(summary_statistics$EQ_total_Monat_12)
+summary_statistics$HOOS_KOOS_Aufnahme <- as.numeric(summary_statistics$HOOS_KOOS_Aufnahme)
+summary_statistics$weight_Aufnahme <- as.numeric(summary_statistics$weight_Aufnahme)
+summary_statistics$height_Aufnahme <- as.numeric(summary_statistics$height_Aufnahme)
+summary_statistics$smoker_Aufnahme <- as.numeric(summary_statistics$smoker_Aufnahme)
+summary_statistics$EQ_total_Aufnahme <- as.numeric(summary_statistics$EQ_total_Aufnahme)
+summary_statistics$any_alert_month1 <- as.numeric(summary_statistics$any_alert_month1)
+summary_statistics$any_alert_month3 <- as.numeric(summary_statistics$any_alert_month3)
+summary_statistics$any_alert_month6 <- as.numeric(summary_statistics$any_alert_month6)
+summary_statistics$mic_reached_month1 <- as.numeric(summary_statistics$mic_reached_month1)
+summary_statistics$mic_reached_month3 <- as.numeric(summary_statistics$mic_reached_month3)
+summary_statistics$mic_reached_month6 <- as.numeric(summary_statistics$mic_reached_month6)
+summary_statistics$EQ_total_Monat_12 <- as.numeric(summary_statistics$EQ_total_Monat_12)
+summary_statistics$EQ_total_Aufnahme <- as.numeric(summary_statistics$EQ_total_Aufnahme)
+summary_statistics$gender_Aufnahme <- as.numeric(summary_statistics$gender_Aufnahme)
+summary_statistics$HOOS_KOOS_Monat_12 <- as.numeric(summary_statistics$HOOS_KOOS_Monat_12)
+
+summary_statistics$all <- 1
+summary_statistics$caredegree_Aufnahme <- as.factor(summary_statistics$caredegree_Aufnahme)
+
+# (Optional duplicate block for MIC "not reached" recalculation; unclustered lines removed)
+summary_statistics$mic_not_reached_month1 <- 1 - summary_statistics$mic_reached_month1
+summary_statistics$mic_not_reached_month3 <- 1 - summary_statistics$mic_reached_month3
+summary_statistics$mic_not_reached_month6 <- 1 - summary_statistics$mic_reached_month6
+
+# Create summary statistics using compareGroups
+compareGroups(cluster ~ ., data = summary_statistics)
+compareGroups(all ~ ., data = summary_statistics)
+
+# Dressing up the output
+resu1 <- compareGroups(cluster ~ ., data = summary_statistics)
+resu2 <- compareGroups(all ~ ., data = summary_statistics)
+
+restab <- createTable(resu1)
+restab
+restab_2 <- createTable(resu2)
+restab_2
+
+# Export summary statistics to Word documents
+export2word(restab, file = 'summary_statistics_cluster_single_variable.docx')
+export2word(restab_2, file = 'summary_statistics_all_single_variable.docx')
+
+# with unclustered -------------------------------------------------------------
+
+
+# plot who get's alerted ------------------
+
+#---- month 3 ----------
+# COWPLOTlibrary(ggplot2)
+library(gridExtra)
+library(cowplot)
+library(dplyr)
+
+
+
+# ABSOLUTE ###
+
+data_multi_clustering <- data_multi_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Monat_1) & !is.na(HOOS_KOOS_Monat_3))
+
+data_HOOS_clustering <- data_HOOS_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Monat_1) & !is.na(HOOS_KOOS_Monat_3))
+
+data_EQ5D5L_clustering <- data_EQ5D5L_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Monat_1) & !is.na(HOOS_KOOS_Monat_3))
+
+
+
+data_multi_clustering$any_alert_month3 <- ifelse(is.na(data_multi_clustering$any_alert_month3), 0, data_multi_clustering$any_alert_month3)
+
+# Calculate the percentages for each dataset
+
+# Hier "na.rm = TRUE" machen?
+percent_PROMQ <- sum(data_multi_clustering$any_alert_month3 == 1) / nrow(data_multi_clustering) * 100
+percent_hoos_clustering <- 100 - sum(data_HOOS_clustering$mic_reached_month3 == 1) / nrow(data_HOOS_clustering) * 100
+percent_EQ5D5L_clustering <- 100 - sum(data_EQ5D5L_clustering$mic_reached_month3 == 1) / nrow(data_EQ5D5L_clustering) * 100
+percent_multi_clustering <- 100 - sum(data_multi_clustering$mic_reached_month3 == 1) / nrow(data_multi_clustering) * 100
+percent_unclustered <- 100 - sum(data_multi_clustering$mic_reached_month3_unclustered == 1) / nrow(data_multi_clustering) * 100
+
+
+
+
+# Create the individual plots
+plot_PROMQ <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Monat_1, y=HOOS_KOOS_Monat_3, shape=as.factor(any_alert_month3), color=as.factor(any_alert_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="Original thresholds (PROMoting Quality)", x="HOOS-PS at m1", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("darkgrey", "blue"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_PROMQ, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_hoos_clustering <- ggplot(data_HOOS_clustering, aes(x=HOOS_KOOS_Monat_1, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3), color=as.factor(mic_reached_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (single-variable (HOOS-PS) clustering)", x="HOOS-PS at m1", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_hoos_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_EQ5D5L_clustering <- ggplot(data_EQ5D5L_clustering, aes(x=HOOS_KOOS_Monat_1, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3), color=as.factor(mic_reached_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (single-variable clustering)", x="HOOS-PS at m1", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_EQ5D5L_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_multi_clustering <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Monat_1, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3), color=as.factor(mic_reached_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (multi-variable clustering)", x="HOOS-PS at m1", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_multi_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_unclustered <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Monat_1, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3_unclustered), color=as.factor(mic_reached_month3_unclustered))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (unclustered)", x="HOOS-PS at m1", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_unclustered, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+
+
+# Combine the plots with a shared legend below
+combined_plot <- plot_grid(plot_PROMQ + theme(legend.position="none"),
+                           plot_unclustered + theme(legend.position="none"),
+                           plot_EQ5D5L_clustering + theme(legend.position="none"),
+                           plot_multi_clustering + theme(legend.position="none"),
+                           ncol = 2, nrow = 2)
+
+# Extract the legend from one of the plots
+legend <- get_legend(plot_PROMQ + theme(legend.position="bottom"))
+
+# Add the legend below the combined plot
+final_plot <- plot_grid(combined_plot, legend, ncol = 1, rel_heights = c(1, 0.1))
+
+# Display the final plot
+print(final_plot)
+
+
+ggsave("month3_alert_comparison_absolute_m3.png", final_plot)
+
+
+
+# DIFFERENCE #
+
+
+
+# Create the individual plots with annotations
+plot_PROMQ <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_3, y=HOOS_KOOS_Monat_3, shape=as.factor(any_alert_month3), color=as.factor(any_alert_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="Original thresholds (PROMoting Quality)", x="HOOS-PS difference", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("darkgrey", "blue"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_PROMQ, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_hoos_clustering <- ggplot(data_HOOS_clustering, aes(x=HOOS_KOOS_diff_3, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3), color=as.factor(mic_reached_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (HOOS-PS baseline clustering)", x="HOOS-PS difference", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_hoos_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_EQ5D5L_clustering <- ggplot(data_EQ5D5L_clustering, aes(x=HOOS_KOOS_diff_3, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3), color=as.factor(mic_reached_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (single-variable clustering)", x="HOOS-PS difference", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_EQ5D5L_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_multi_clustering <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_3, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3), color=as.factor(mic_reached_month3))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (multi-variable clustering)", x="HOOS-PS difference", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_multi_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_unclustered <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_3, y=HOOS_KOOS_Monat_3, shape=as.factor(mic_reached_month3_unclustered), color=as.factor(mic_reached_month3_unclustered))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (unclustered)", x="HOOS-PS difference", y="HOOS-PS at m3") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_unclustered, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+# Combine the plots with a shared legend below
+combined_plot <- plot_grid(plot_PROMQ + theme(legend.position="none"),
+                           plot_unclustered + theme(legend.position="none"),
+                           plot_EQ5D5L_clustering + theme(legend.position="none"),
+                           plot_multi_clustering + theme(legend.position="none"),
+                           ncol = 2, nrow = 2)
+
+# Print the combined plot
+print(combined_plot)
+
+# Extract the legend from one of the plots
+legend <- get_legend(plot_PROMQ + theme(legend.position="bottom"))
+
+# Add the legend below the combined plot
+final_plot <- plot_grid(combined_plot, legend, ncol = 1, rel_heights = c(1, 0.1))
+
+# Display the final plot
+print(final_plot)
+
+ggsave("month3_alert_comparison_difference_m3.png", final_plot)
+
+#---- month 1 ----------
+
+
+# ABSOLUTE ###
+
+data_multi_clustering <- data_multi_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Aufnahme) & !is.na(HOOS_KOOS_Monat_3))
+
+data_HOOS_clustering <- data_HOOS_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Aufnahme) & !is.na(HOOS_KOOS_Monat_3))
+
+data_EQ5D5L_clustering <- data_EQ5D5L_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Monat_1) & !is.na(HOOS_KOOS_Monat_3))
+
+
+
+data_multi_clustering$any_alert_month1 <- ifelse(is.na(data_multi_clustering$any_alert_month1), 0, data_multi_clustering$any_alert_month1)
+
+# Calculate the percentages for each dataset
+percent_PROMQ <- sum(data_multi_clustering$any_alert_month1 == 1) / nrow(data_multi_clustering) * 100
+percent_hoos_clustering <- 100 - sum(data_HOOS_clustering$mic_reached_month1 == 1) / nrow(data_HOOS_clustering) * 100
+percent_EQ5D5L_clustering <- 100 - sum(data_EQ5D5L_clustering$mic_reached_month1 == 1) / nrow(data_EQ5D5L_clustering) * 100
+percent_multi_clustering <- 100 - sum(data_multi_clustering$mic_reached_month1 == 1) / nrow(data_multi_clustering) * 100
+percent_unclustered <- 100 - sum(data_multi_clustering$mic_reached_month1_unclustered == 1) / nrow(data_multi_clustering) * 100
+
+
+
+
+# Create the individual plots
+plot_PROMQ <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Entlassung, y=HOOS_KOOS_Monat_1, shape=as.factor(any_alert_month1), color=as.factor(any_alert_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="Original thresholds (PROMoting Quality)", x="HOOS-PS at discharge", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("darkgrey", "blue"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_PROMQ, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_hoos_clustering <- ggplot(data_HOOS_clustering, aes(x=HOOS_KOOS_Entlassung, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1), color=as.factor(mic_reached_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (HOOS-PS baseline clustering)", x="HOOS-PS at discharge", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_hoos_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_EQ5D5L_clustering <- ggplot(data_EQ5D5L_clustering, aes(x=HOOS_KOOS_Entlassung, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1), color=as.factor(mic_reached_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (single-variable clustering)", x="HOOS-PS at discharge", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_EQ5D5L_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_multi_clustering <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Entlassung, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1), color=as.factor(mic_reached_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (multi-variable clustering)", x="HOOS-PS at discharge", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_multi_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_unclustered <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Entlassung, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1_unclustered), color=as.factor(mic_reached_month1_unclustered))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (unclustered)", x="HOOS-PS at discharge", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_unclustered, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+
+
+# Combine the plots with a shared legend below
+combined_plot <- plot_grid(plot_PROMQ + theme(legend.position="none"),
+                           plot_unclustered + theme(legend.position="none"),
+                           plot_EQ5D5L_clustering + theme(legend.position="none"),
+                           plot_multi_clustering + theme(legend.position="none"),
+                           ncol = 2, nrow = 2)
+
+# Extract the legend from one of the plots
+legend <- get_legend(plot_PROMQ + theme(legend.position="bottom"))
+
+# Add the legend below the combined plot
+final_plot <- plot_grid(combined_plot, legend, ncol = 1, rel_heights = c(1, 0.1))
+
+# Display the final plot
+print(final_plot)
+
+
+ggsave("month1_alert_comparison_absolute_m1.png", final_plot)
+
+
+
+# DIFFERENCE #
+
+
+
+# Create the individual plots with annotations
+plot_PROMQ <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_1, y=HOOS_KOOS_Monat_1, shape=as.factor(any_alert_month1), color=as.factor(any_alert_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="Original thresholds (PROMoting Quality)", x="HOOS-PS difference", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("darkgrey", "blue"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_PROMQ, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_hoos_clustering <- ggplot(data_HOOS_clustering, aes(x=HOOS_KOOS_diff_1, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1), color=as.factor(mic_reached_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (HOOS-PS baseline clustering)", x="HOOS-PS difference", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_hoos_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_EQ5D5L_clustering <- ggplot(data_EQ5D5L_clustering, aes(x=HOOS_KOOS_diff_1, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1), color=as.factor(mic_reached_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (single-variable clustering)", x="HOOS-PS difference", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_EQ5D5L_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_multi_clustering <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_1, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1), color=as.factor(mic_reached_month1))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (multi-variable clustering)", x="HOOS-PS difference", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_multi_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_unclustered <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_1, y=HOOS_KOOS_Monat_1, shape=as.factor(mic_reached_month1_unclustered), color=as.factor(mic_reached_month1_unclustered))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (unclustered)", x="HOOS-PS difference", y="HOOS-PS at m1") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_unclustered, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+# Combine the plots with a shared legend below
+combined_plot <- plot_grid(plot_PROMQ + theme(legend.position="none"),
+                           plot_unclustered + theme(legend.position="none"),
+                           plot_EQ5D5L_clustering + theme(legend.position="none"),
+                           plot_multi_clustering + theme(legend.position="none"),
+                           ncol = 2, nrow = 2)
+
+# Print the combined plot
+print(combined_plot)
+
+# Extract the legend from one of the plots
+legend <- get_legend(plot_PROMQ + theme(legend.position="bottom"))
+
+# Add the legend below the combined plot
+final_plot <- plot_grid(combined_plot, legend, ncol = 1, rel_heights = c(1, 0.1))
+
+# Display the final plot
+print(final_plot)
+
+ggsave("month1_alert_comparison_difference_m1.png", final_plot)
+
+
+# month 6 ---------------
+
+
+# ABSOLUTE ###
+
+data_multi_clustering <- data_multi_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Monat_3) & !is.na(HOOS_KOOS_Monat_6))
+
+data_HOOS_clustering <- data_HOOS_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Monat_3) & !is.na(HOOS_KOOS_Monat_6))
+
+data_EQ5D5L_clustering <- data_EQ5D5L_clustering %>%
+  mutate(HOOS_KOOS_Aufnahme = as.numeric(gsub(",", ".", HOOS_KOOS_Aufnahme)),
+         HOOS_KOOS_Entlassung = as.numeric(gsub(",", ".", HOOS_KOOS_Entlassung)),
+         HOOS_KOOS_diff_6 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_6)),
+         HOOS_KOOS_diff_1 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_1)),
+         HOOS_KOOS_diff_3 = as.numeric(gsub(",", ".", HOOS_KOOS_diff_3)),
+         HOOS_KOOS_Monat_6 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_6)),
+         HOOS_KOOS_Monat_1 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_1)),
+         HOOS_KOOS_Monat_3 = as.numeric(gsub(",", ".", HOOS_KOOS_Monat_3))) %>%
+  filter(!is.na(HOOS_KOOS_Monat_3) & !is.na(HOOS_KOOS_Monat_6))
+
+
+
+data_multi_clustering$any_alert_month6 <- ifelse(is.na(data_multi_clustering$any_alert_month6), 0, data_multi_clustering$any_alert_month6)
+
+# Calculate the percentages for each dataset
+percent_PROMQ <- sum(data_multi_clustering$any_alert_month6 == 1) / nrow(data_multi_clustering) * 100
+percent_hoos_clustering <- 100 - sum(data_HOOS_clustering$mic_reached_month6 == 1) / nrow(data_HOOS_clustering) * 100
+percent_EQ5D5L_clustering <- 100 - sum(data_EQ5D5L_clustering$mic_reached_month6 == 1) / nrow(data_EQ5D5L_clustering) * 100
+percent_multi_clustering <- 100 - sum(data_multi_clustering$mic_reached_month6 == 1) / nrow(data_multi_clustering) * 100
+percent_unclustered <- 100 - sum(data_multi_clustering$mic_reached_month6_unclustered == 1) / nrow(data_multi_clustering) * 100
+
+
+
+
+# Create the individual plots
+plot_PROMQ <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Monat_3, y=HOOS_KOOS_Monat_6, shape=as.factor(any_alert_month6), color=as.factor(any_alert_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="Original thresholds (PROMoting Quality)", x="HOOS-PS at m3", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("darkgrey", "blue"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_PROMQ, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_hoos_clustering <- ggplot(data_HOOS_clustering, aes(x=HOOS_KOOS_Monat_3, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6), color=as.factor(mic_reached_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (HOOS-PS baseline clustering)", x="HOOS-PS at m3", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_hoos_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_EQ5D5L_clustering <- ggplot(data_EQ5D5L_clustering, aes(x=HOOS_KOOS_Monat_3, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6), color=as.factor(mic_reached_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (single-variable clustering)", x="HOOS-PS at m3", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_EQ5D5L_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_multi_clustering <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Monat_3, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6), color=as.factor(mic_reached_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (multi-variable clustering)", x="HOOS-PS at m3", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_multi_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+plot_unclustered <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_Monat_3, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6_unclustered), color=as.factor(mic_reached_month6_unclustered))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (unclustered)", x="HOOS-PS at m3", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_unclustered, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+
+
+
+# Combine the plots with a shared legend below
+combined_plot <- plot_grid(plot_PROMQ + theme(legend.position="none"),
+                           plot_unclustered + theme(legend.position="none"),
+                           plot_EQ5D5L_clustering + theme(legend.position="none"),
+                           plot_multi_clustering + theme(legend.position="none"),
+                           ncol = 2, nrow = 2)
+
+# Extract the legend from one of the plots
+legend <- get_legend(plot_PROMQ + theme(legend.position="bottom"))
+
+# Add the legend below the combined plot
+final_plot <- plot_grid(combined_plot, legend, ncol = 1, rel_heights = c(1, 0.1))
+
+# Display the final plot
+print(final_plot)
+
+
+ggsave("month6_alert_comparison_absolute_m6.png", final_plot)
+
+
+
+# DIFFERENCE #
+
+
+
+# Create the individual plots with annotations
+plot_PROMQ <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_6, y=HOOS_KOOS_Monat_6, shape=as.factor(any_alert_month6), color=as.factor(any_alert_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="Original thresholds (PROMoting Quality)", x="HOOS-PS difference", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("darkgrey", "blue"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_PROMQ, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_hoos_clustering <- ggplot(data_HOOS_clustering, aes(x=HOOS_KOOS_diff_6, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6), color=as.factor(mic_reached_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (HOOS-PS baseline clustering)", x="HOOS-PS difference", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_hoos_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_EQ5D5L_clustering <- ggplot(data_EQ5D5L_clustering, aes(x=HOOS_KOOS_diff_6, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6), color=as.factor(mic_reached_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (single-variable clustering)", x="HOOS-PS difference", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_EQ5D5L_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_multi_clustering <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_6, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6), color=as.factor(mic_reached_month6))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (multi-variable clustering)", x="HOOS-PS difference", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_multi_clustering, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+plot_unclustered <- ggplot(data_multi_clustering, aes(x=HOOS_KOOS_diff_6, y=HOOS_KOOS_Monat_6, shape=as.factor(mic_reached_month6_unclustered), color=as.factor(mic_reached_month6_unclustered))) +
+  geom_point(size=2) +
+  theme_minimal() +
+  labs(title="New thresholds (unclustered)", x="HOOS-PS difference", y="HOOS-PS at m6") +
+  scale_shape_manual(values=c(16, 16), name="MIC Reached/alert triggered") +
+  scale_color_manual(values=c("blue", "darkgrey"), name="MIC Reached/alert triggered") +
+  annotate("text", x=Inf, y=-Inf, label=paste0(round(percent_unclustered, 1), "% receive an alert"), hjust=1.1, vjust=-1.5)
+
+# Combine the plots with a shared legend below
+combined_plot <- plot_grid(plot_PROMQ + theme(legend.position="none"),
+                           plot_unclustered + theme(legend.position="none"),
+                           plot_EQ5D5L_clustering + theme(legend.position="none"),
+                           plot_multi_clustering + theme(legend.position="none"),
+                           ncol = 2, nrow = 2)
+
+# Print the combined plot
+print(combined_plot)
+
+# Extract the legend from one of the plots
+legend <- get_legend(plot_PROMQ + theme(legend.position="bottom"))
+
+# Add the legend below the combined plot
+final_plot <- plot_grid(combined_plot, legend, ncol = 1, rel_heights = c(1, 0.1))
+
+# Display the final plot
+print(final_plot)
+
+ggsave("month6_alert_comparison_difference_m6.png", final_plot)
+
+
+# overlap table-----------------------------------------------------------------
+
+
+
+
+# Load the packages
+library(flextable)
+library(officer)
+
+# Corrected function to calculate percentage of overlap
+calculate_overlap_percentage <- function(data, month) {
+  any_alert_col <- paste0("any_alert_", month)
+  mic_reached_col <- paste0("mic_reached_", month)
+  
+  # Calculate the overlap count where any_alert == 1 and mic_reached == 0
+  overlap_count <- sum(data[[any_alert_col]] == 1 & data[[mic_reached_col]] == 0, na.rm = TRUE)
+  
+  # Calculate the number of rows where any_alert == 1
+  positive_alerts <- sum(data[[any_alert_col]] == 1, na.rm = TRUE)
+  
+  # Calculate the percentage overlap
+  percentage_overlap <- (overlap_count / positive_alerts) * 100
+  
+  return(percentage_overlap)
+}
+
+# Calculate percentages and alerts for each dataset and month
+hoos_overlap_month1 <- calculate_overlap_percentage(data_HOOS_clustering, "month1")
+hoos_overlap_month3 <- calculate_overlap_percentage(data_HOOS_clustering, "month3")
+hoos_overlap_month6 <- calculate_overlap_percentage(data_HOOS_clustering, "month6")
+
+eq5d_overlap_month1 <- calculate_overlap_percentage(data_EQ5D5L_clustering, "month1")
+eq5d_overlap_month3 <- calculate_overlap_percentage(data_EQ5D5L_clustering, "month3")
+eq5d_overlap_month6 <- calculate_overlap_percentage(data_EQ5D5L_clustering, "month6")
+
+multi_overlap_month1 <- calculate_overlap_percentage(data_multi_clustering, "month1")
+multi_overlap_month3 <- calculate_overlap_percentage(data_multi_clustering, "month3")
+multi_overlap_month6 <- calculate_overlap_percentage(data_multi_clustering, "month6")
+
+
+# Calculate the number of alerts for old and new methods
+calculate_alerts <- function(data, old_method_col, new_method_col) {
+  old_alerts <- sum(data[[old_method_col]], na.rm = TRUE)
+  new_alerts <- sum(data[[new_method_col]] == 0, na.rm = TRUE)  # Adjusting for the new method where 0 indicates an alert
+  return(paste(old_alerts, "vs", new_alerts))
+}
+
+hoos_alerts_month1 <- calculate_alerts(data_HOOS_clustering, "any_alert_month1", "mic_reached_month1")
+hoos_alerts_month3 <- calculate_alerts(data_HOOS_clustering, "any_alert_month3", "mic_reached_month3")
+hoos_alerts_month6 <- calculate_alerts(data_HOOS_clustering, "any_alert_month6", "mic_reached_month6")
+
+eq5d_alerts_month1 <- calculate_alerts(data_EQ5D5L_clustering, "any_alert_month1", "mic_reached_month1")
+eq5d_alerts_month3 <- calculate_alerts(data_EQ5D5L_clustering, "any_alert_month3", "mic_reached_month3")
+eq5d_alerts_month6 <- calculate_alerts(data_EQ5D5L_clustering, "any_alert_month6", "mic_reached_month6")
+
+multi_alerts_month1 <- calculate_alerts(data_multi_clustering, "any_alert_month1", "mic_reached_month1")
+multi_alerts_month3 <- calculate_alerts(data_multi_clustering, "any_alert_month3", "mic_reached_month3")
+multi_alerts_month6 <- calculate_alerts(data_multi_clustering, "any_alert_month6", "mic_reached_month6")
+
+# Create a data frame with the results
+results <- data.frame(
+  Method = rep(c("HOOS", "EQ5D5L", "Multi"), each = 3),
+  Month = rep(c("Month 1", "Month 3", "Month 6"), 3),
+  `Percentage of Alert Overlap` = c(
+    hoos_overlap_month1, hoos_overlap_month3, hoos_overlap_month6,
+    eq5d_overlap_month1, eq5d_overlap_month3, eq5d_overlap_month6,
+    multi_overlap_month1, multi_overlap_month3, multi_overlap_month6
+  ),
+  `Alerts (Old vs New)` = c(
+    hoos_alerts_month1, hoos_alerts_month3, hoos_alerts_month6,
+    eq5d_alerts_month1, eq5d_alerts_month3, eq5d_alerts_month6,
+    multi_alerts_month1, multi_alerts_month3, multi_alerts_month6
+  )
+)
+
+# Create the flextable object
+ft <- flextable(results)
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(ft)
+
+print(doc, target = "alert_overlap_results_with_alerts.docx")
+
+
+# create "one_dataset" for correlation matrix
+one_dataset=data_HOOS_clustering$mic_reached_month1
+one_dataset <- as.data.frame(one_dataset)
+
+# PROMotingQ
+one_dataset$PROMQ_MIC_m1 <- data_HOOS_clustering$any_alert_month1 
+one_dataset$PROMQ_MIC_m1<- ifelse(is.na(one_dataset$PROMQ_MIC_m1), 0, one_dataset$PROMQ_MIC_m1)
+
+one_dataset$PROMQ_MIC_m3 <- data_EQ5D5L_clustering$any_alert_month3 
+one_dataset$PROMQ_MIC_m3<- ifelse(is.na(one_dataset$PROMQ_MIC_m3), 0, one_dataset$PROMQ_MIC_m3)
+
+one_dataset$PROMQ_MIC_m6 <- data_EQ5D5L_clustering$any_alert_month6 
+one_dataset$PROMQ_MIC_m6<- ifelse(is.na(one_dataset$PROMQ_MIC_m6), 0, one_dataset$PROMQ_MIC_m6)
+
+# unclustered 
+one_dataset$MIC_m1_unclustered <- data_multi_clustering$mic_reached_month1_unclustered
+one_dataset$MIC_m3_unclustered <- data_multi_clustering$mic_reached_month3_unclustered
+one_dataset$MIC_m6_unclustered <- data_multi_clustering$mic_reached_month6_unclustered
+
+#one_dataset$HOOS_MIC_m1 <- data_HOOS_clustering$mic_reached_month1 
+one_dataset$EQ_MIC_m1 <- data_EQ5D5L_clustering$mic_reached_month1 
+one_dataset$Multi_MIC_m1 <- data_multi_clustering$mic_reached_month1 
+
+#one_dataset$HOOS_MIC_m3 <- data_HOOS_clustering$mic_reached_month3 
+one_dataset$EQ_MIC_m3 <- data_EQ5D5L_clustering$mic_reached_month3 
+one_dataset$Multi_MIC_m3 <- data_multi_clustering$mic_reached_month3
+
+#one_dataset$HOOS_MIC_m6 <- data_HOOS_clustering$mic_reached_month6 
+one_dataset$EQ_MIC_m6 <- data_EQ5D5L_clustering$mic_reached_month6 
+one_dataset$Multi_MIC_m6 <- data_multi_clustering$mic_reached_month6
+
+
+one_dataset$one_dataset=NULL
+
+# Define a function to calculate the overlap matrix
+calculate_overlap_matrix <- function(data, columns) {
+  overlap_matrix <- matrix(0, nrow = length(columns), ncol = length(columns))
+  colnames(overlap_matrix) <- columns
+  rownames(overlap_matrix) <- columns
+  
+  for (col1 in columns) {
+    for (col2 in columns) {
+      overlap <- mean(data[[col1]] == data[[col2]]) * 100  # Percentage of matching values
+      overlap_matrix[col1, col2] <- overlap
+    }
+  }
+  
+  return(as.data.frame(overlap_matrix))
+}
+
+# Columns for each month
+month_1_columns <- c("PROMQ_MIC_m1", "MIC_m1_unclustered", "EQ_MIC_m1", "Multi_MIC_m1")
+month_3_columns <- c("PROMQ_MIC_m3", "MIC_m3_unclustered", "EQ_MIC_m3", "Multi_MIC_m3")
+month_6_columns <- c("PROMQ_MIC_m6", "MIC_m6_unclustered", "EQ_MIC_m6", "Multi_MIC_m6")
+
+# Calculate overlap matrices for each month
+overlap_matrix_m1 <- calculate_overlap_matrix(one_dataset, month_1_columns)
+overlap_matrix_m3 <- calculate_overlap_matrix(one_dataset, month_3_columns)
+overlap_matrix_m6 <- calculate_overlap_matrix(one_dataset, month_6_columns)
+
+# Print the overlap matrices
+print("Overlap Matrix for Month 1:")
+print(overlap_matrix_m1)
+
+print("Overlap Matrix for Month 3:")
+print(overlap_matrix_m3)
+
+print("Overlap Matrix for Month 6:")
+print(overlap_matrix_m6)
+
+
+overlap_matrix_m1 <- round(overlap_matrix_m1, 2)
+overlap_matrix_m3 <- round(overlap_matrix_m3, 2)
+overlap_matrix_m6 <- round(overlap_matrix_m6, 2)
+
+
+# Combine the results into one list or dataframe
+results <- list("Month 1 Overlap" = overlap_matrix_m1,
+                "Month 3 Overlap" = overlap_matrix_m3,
+                "Month 6 Overlap" = overlap_matrix_m6)
+
+# Create a Word document with the overlap results
+doc <- read_docx()
+
+# Add each matrix as a table in the document
+for (name in names(results)) {
+  # Convert the data frame to include row names as a column
+  result_with_rownames <- rownames_to_column(results[[name]], var = "Methods")
+  
+  # Create the flextable object, add row names as the first column
+  ft <- flextable(result_with_rownames) %>%
+    add_header_row(values = name, colwidths = ncol(result_with_rownames)) %>%
+    theme_booktabs() %>%
+    set_header_labels(
+      Methods = "Methods", 
+      HOOS_MIC_m1 = "HOOS_MIC_m1",
+      EQ_MIC_m1 = "EQ_MIC_m1",
+      Multi_MIC_m1 = "Multi_MIC_m1",
+      PROMQ_MIC_m1 = "PROMQ_MIC_m1",
+      HOOS_MIC_m3 = "HOOS_MIC_m3",
+      EQ_MIC_m3 = "EQ_MIC_m3",
+      Multi_MIC_m3 = "Multi_MIC_m3",
+      PROMQ_MIC_m3 = "PROMQ_MIC_m3",
+      HOOS_MIC_m6 = "HOOS_MIC_m6",
+      EQ_MIC_m6 = "EQ_MIC_m6",
+      Multi_MIC_m6 = "Multi_MIC_m6",
+      PROMQ_MIC_m6 = "PROMQ_MIC_m6"
+    )
+  
+  # Add title and table to the document
+  doc <- doc %>%
+    body_add_par(value = name, style = "heading 1") %>%
+    body_add_flextable(ft)
+}
+
+# Export the Word document
+print(doc, target = "alert_overlap_results_with_alerts.docx")
+
